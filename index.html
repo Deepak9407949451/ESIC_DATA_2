@@ -139,10 +139,10 @@
         measurementId: ""
       };
 
-      const MAX_WEB_APP_URL_LENGTH = 2048;
-      const MAX_SHEET_NAME_LENGTH = 120;
-      const MAX_NOTE_LABEL_LENGTH = 120;
-      const MAX_NOTE_CONTENT_LENGTH = 20000;
+      const FIREBASE_MAX_WEB_APP_URL_LENGTH = 2048;
+      const FIREBASE_MAX_SHEET_NAME_LENGTH = 120;
+      const FIREBASE_MAX_NOTE_LABEL_LENGTH = 120;
+      const FIREBASE_MAX_NOTE_CONTENT_LENGTH = 20000;
       const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
       function createOfflineBridge() {
@@ -169,6 +169,7 @@
             return customId || `note_${Date.now()}`;
           },
           async updatePermanentNoteInCloud() {},
+          async deletePermanentNoteFromCloud() {},
           subscribePermanentNotes(_uid, onData) {
             onData([]);
             return () => {};
@@ -210,8 +211,8 @@
               return authMod.signOut(auth);
             },
             async saveGoogleSyncSettingsToCloud(uid, webAppUrl, sheetName) {
-              const cleanUrl = String(webAppUrl || "").trim().slice(0, MAX_WEB_APP_URL_LENGTH);
-              const cleanSheet = (String(sheetName || "").trim() || "ESIC_Claims_Register").slice(0, MAX_SHEET_NAME_LENGTH);
+              const cleanUrl = String(webAppUrl || "").trim().slice(0, FIREBASE_MAX_WEB_APP_URL_LENGTH);
+              const cleanSheet = (String(sheetName || "").trim() || "ESIC_Claims_Register").slice(0, FIREBASE_MAX_SHEET_NAME_LENGTH);
               const ref = fsMod.doc(db, "users", uid, "settings", "googleSync");
               const snap = await fsMod.getDoc(ref);
               if (snap.exists()) {
@@ -255,8 +256,8 @@
               );
             },
             async addPermanentNoteToCloud(uid, label, content, customId) {
-              const cleanLabel = String(label || "").trim().slice(0, MAX_NOTE_LABEL_LENGTH);
-              const cleanContent = String(content || "").trim().slice(0, MAX_NOTE_CONTENT_LENGTH);
+              const cleanLabel = String(label || "").trim().slice(0, FIREBASE_MAX_NOTE_LABEL_LENGTH);
+              const cleanContent = String(content || "").trim().slice(0, FIREBASE_MAX_NOTE_CONTENT_LENGTH);
               if (!cleanContent) throw new Error("Note content cannot be empty.");
               const rawId =
                 customId && SAFE_ID_PATTERN.test(customId)
@@ -273,8 +274,8 @@
               return rawId;
             },
             async updatePermanentNoteInCloud(uid, noteId, label, content) {
-              const cleanLabel = String(label || "").trim().slice(0, MAX_NOTE_LABEL_LENGTH);
-              const cleanContent = String(content || "").trim().slice(0, MAX_NOTE_CONTENT_LENGTH);
+              const cleanLabel = String(label || "").trim().slice(0, FIREBASE_MAX_NOTE_LABEL_LENGTH);
+              const cleanContent = String(content || "").trim().slice(0, FIREBASE_MAX_NOTE_CONTENT_LENGTH);
               if (!cleanContent) throw new Error("Note content cannot be empty.");
               const ref = fsMod.doc(db, "users", uid, "notes", noteId);
               await fsMod.updateDoc(ref, {
@@ -282,6 +283,10 @@
                 content: cleanContent,
                 updatedAt: fsMod.serverTimestamp(),
               });
+            },
+            async deletePermanentNoteFromCloud(uid, noteId) {
+              const ref = fsMod.doc(db, "users", uid, "notes", noteId);
+              await fsMod.deleteDoc(ref);
             },
             subscribePermanentNotes(uid, onData, onError) {
               const q = fsMod.query(
@@ -335,6 +340,10 @@
       const MAX_SHEET_NAME_LENGTH = 120;
       const MAX_NOTE_LABEL_LENGTH = 120;
       const MAX_NOTE_CONTENT_LENGTH = 20000;
+      const DEFAULT_SCRIPT_NOTE_ID = 'esic_google_apps_script_url';
+      const DEFAULT_SCRIPT_NOTE_URL = 'https://script.google.com/macros/s/AKfycbx2y2jdrsv-vN0BYZ3PBQmUDFn2pwVoRI8OT2k7eZMJiASGQQZqo4jGwr85V8cNUA6l/exec';
+      const DEFAULT_SCRIPT_NOTE_REMOVED_KEY = 'esic_default_script_note_removed_v1';
+      const DEFAULT_SCRIPT_NOTE_CREATED_AT = new Date().toISOString();
 
       const SvgIcon = ({ children, className = "h-4 w-4", ...props }) => (
         <svg
@@ -541,7 +550,16 @@
       // =========================================================================
       // CLAIM SCHEMA, CONSTANTS & DOMAIN HELPERS
       // =========================================================================
-      const RELATION_OPTIONS = ['Self', 'Mother', 'Father', 'Spouse', 'Son', 'Daughter'];
+      const RELATION_OPTIONS = [
+        'Self',
+        'Mother',
+        'Father',
+        'Dependent Mother',
+        'Dependent Father',
+        'Spouse',
+        'Son',
+        'Daughter',
+      ];
       const GENDER_OPTIONS = ['Male', 'Female', 'Other'];
       const EXTENSION_COUNT_OPTIONS = ['1st Time', '2nd Time', '3rd Time', '4th Time', '5th Time', '6th Time'];
       const DEPARTMENT_OPTIONS = [
@@ -552,6 +570,7 @@
         'Urology',
         'Nephrology',
         'Neurosurgery',
+        'Neurology',
       ];
       const ROOM_TYPE_OPTIONS = [
         'ICCU',
@@ -567,6 +586,7 @@
         'Admitted',
         'Discharge',
         'E-Bill Submitted',
+        'Hard-Copy Submitted',
         'Query',
         'Extension Send',
         'Extension Approved',
@@ -3672,7 +3692,7 @@ ${rowsHtml}
         }
       }
 
-      function PermanentNotepad({ notes, isCloudSignedIn, isSavingNote, onSaveNewNote, onUpdateNote, onSignInGoogle }) {
+      function PermanentNotepad({ notes, isCloudSignedIn, isSavingNote, onSaveNewNote, onUpdateNote, onDeleteNote, onSignInGoogle }) {
         const [labelInput, setLabelInput] = useState('');
         const [contentInput, setContentInput] = useState('');
         const [formError, setFormError] = useState(null);
@@ -3717,7 +3737,7 @@ ${rowsHtml}
                 <StickyNote className="mt-0.5 h-4 w-4 text-teal-700 shrink-0" aria-hidden="true" />
                 <div>
                   <h2 className="text-base font-semibold text-slate-900">Permanent Notepad (URLs, Links &amp; Text)</h2>
-                  <p className="mt-0.5 text-xs text-slate-500">Paste and save URLs, scripts, or notes permanently · Protected against deletion · One-click copy anytime</p>
+                  <p className="mt-0.5 text-xs text-slate-500">Paste and save URLs, scripts, or notes permanently · Saved until removed · One-click copy anytime</p>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -3751,7 +3771,7 @@ ${rowsHtml}
               </div>
               {formError ? <p role="alert" className="text-xs font-medium text-red-700">{formError}</p> : null}
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className="text-[11px] text-slate-500">Saved items stay stored permanently (no delete option so saved links cannot be lost).</span>
+                <span className="text-[11px] text-slate-500">Saved items stay stored until you remove them.</span>
                 <div className="flex items-center gap-2">
                   {contentInput.trim() ? (
                     <button type="button" onClick={() => void handleCopy('__DRAFT__', contentInput)} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap">
@@ -3804,6 +3824,9 @@ ${rowsHtml}
                               </button>
                               <button type="button" onClick={() => handleStartEdit(note)} className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 whitespace-nowrap">
                                 <Pencil className="h-3 w-3" aria-hidden="true" /> Edit
+                              </button>
+                              <button type="button" onClick={() => void onDeleteNote(note)} className="inline-flex h-7 items-center gap-1 rounded-md border border-red-200 bg-white px-2 text-xs font-medium text-red-700 hover:bg-red-50 whitespace-nowrap">
+                                <X className="h-3 w-3" aria-hidden="true" /> Remove
                               </button>
                             </div>
                           </div>
@@ -3877,7 +3900,7 @@ ${rowsHtml}
       function GoogleSyncView({
         columns, records, webAppUrl, sheetName, lastSyncedAt, authUserEmail, isAuthLoading,
         isSavingSettings, settingsSavedAt, notes, isSavingNote, onWebAppUrlChange, onSheetNameChange,
-        onSaveSyncSettings, onSignInGoogle, onSignOutGoogle, onSaveNewNote, onUpdateNote,
+        onSaveSyncSettings, onSignInGoogle, onSignOutGoogle, onSaveNewNote, onUpdateNote, onDeleteNote,
         onSyncComplete, onLoadFromSheet,
       }) {
         const [selectedHeaderKey, setSelectedHeaderKey] = useState(null);
@@ -4104,7 +4127,7 @@ ${rowsHtml}
               </div>
             </section>
 
-            <PermanentNotepad notes={notes} isCloudSignedIn={Boolean(authUserEmail)} isSavingNote={isSavingNote} onSaveNewNote={onSaveNewNote} onUpdateNote={onUpdateNote} onSignInGoogle={onSignInGoogle} />
+            <PermanentNotepad notes={notes} isCloudSignedIn={Boolean(authUserEmail)} isSavingNote={isSavingNote} onSaveNewNote={onSaveNewNote} onUpdateNote={onUpdateNote} onDeleteNote={onDeleteNote} onSignInGoogle={onSignInGoogle} />
 
             <section className="rounded-xl border border-slate-200 bg-white">
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
@@ -5238,6 +5261,8 @@ ${rowsHtml}
         records,
         editingId,
         nowMs,
+        statusFilter,
+        onStatusFilterChange,
         onView,
         onEdit,
         onDuplicate,
@@ -5254,7 +5279,6 @@ ${rowsHtml}
         compactHeader = false,
       }) {
         const [searchQuery, setSearchQuery] = useState('');
-        const [statusFilter, setStatusFilter] = useState('all');
         const [columnFilter, setColumnFilter] = useState('all');
         const [selectedRecordId, setSelectedRecordId] = useState(null);
         const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -5266,7 +5290,7 @@ ${rowsHtml}
         );
 
         const uniqueStatuses = useMemo(() => {
-          const set = new Set();
+          const set = new Set(STATUS_OPTIONS);
           records.forEach((r) => {
             if ((r.status || '').trim()) set.add(r.status.trim());
           });
@@ -5301,9 +5325,24 @@ ${rowsHtml}
               acc.finalBill += parseNumericAmount(rec.finalBill || '');
               acc.settledAmount += parseNumericAmount(rec.settledAmount || '');
               acc.deductionAmount += parseNumericAmount(rec.deductionAmount || '');
+              const status = (rec.status || '').trim();
+              if (status === 'E-Bill Submitted') acc.eBillSubmittedCount += 1;
+              if (status === 'Admitted') acc.admittedCount += 1;
+              if (status === 'Discharge') acc.dischargeCount += 1;
+              if (status === 'Hard-Copy Submitted') acc.hardCopySubmittedCount += 1;
+              if (status === 'Query') acc.queryCount += 1;
               return acc;
             },
-            { finalBill: 0, settledAmount: 0, deductionAmount: 0 }
+            {
+              finalBill: 0,
+              settledAmount: 0,
+              deductionAmount: 0,
+              eBillSubmittedCount: 0,
+              admittedCount: 0,
+              dischargeCount: 0,
+              hardCopySubmittedCount: 0,
+              queryCount: 0,
+            }
           );
         }, [filteredRecords]);
 
@@ -5315,6 +5354,11 @@ ${rowsHtml}
             finalBill: totals.finalBill,
             settledAmount: totals.settledAmount,
             deductionAmount: totals.deductionAmount,
+            eBillSubmittedCount: totals.eBillSubmittedCount,
+            admittedCount: totals.admittedCount,
+            dischargeCount: totals.dischargeCount,
+            hardCopySubmittedCount: totals.hardCopySubmittedCount,
+            queryCount: totals.queryCount,
           });
         }, [
           filteredRecords.length,
@@ -5322,6 +5366,11 @@ ${rowsHtml}
           totals.finalBill,
           totals.settledAmount,
           totals.deductionAmount,
+          totals.eBillSubmittedCount,
+          totals.admittedCount,
+          totals.dischargeCount,
+          totals.hardCopySubmittedCount,
+          totals.queryCount,
           onFilteredSummaryChange,
         ]);
 
@@ -5531,7 +5580,7 @@ ${rowsHtml}
 
                   <select
                     value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
+                    onChange={(e) => onStatusFilterChange(e.target.value)}
                     aria-label="Filter by claim status"
                     className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
                   >
@@ -5593,7 +5642,7 @@ ${rowsHtml}
                   type="button"
                   onClick={() => {
                     setSearchQuery('');
-                    setStatusFilter('all');
+                    onStatusFilterChange('all');
                   }}
                   className="mt-4 inline-flex h-9 items-center rounded-lg border border-slate-300 bg-white px-4 text-xs font-medium text-slate-700 hover:bg-slate-50"
                 >
@@ -5647,10 +5696,18 @@ ${rowsHtml}
                       const isEditingRow = record.id === editingId;
                       const isCheckedRow = record.id === selectedRecordId;
                       const isHighlighted = isEditingRow || isCheckedRow;
-                      const rowBg = isHighlighted ? 'bg-teal-50/50' : 'bg-white hover:bg-slate-50/90';
-                      const stickyBg = isHighlighted
-                        ? 'md:bg-teal-50'
-                        : 'md:bg-white group-hover:md:bg-slate-50';
+                      const isEBillSubmitted =
+                        String(record.status || '').trim().toLowerCase() === 'e-bill submitted';
+                      const rowBg = isEBillSubmitted
+                        ? 'bg-emerald-100 hover:bg-emerald-200/70'
+                        : isHighlighted
+                          ? 'bg-teal-50/50'
+                          : 'bg-white hover:bg-slate-50/90';
+                      const stickyBg = isEBillSubmitted
+                        ? 'md:bg-emerald-100 group-hover:md:bg-emerald-200'
+                        : isHighlighted
+                          ? 'md:bg-teal-50'
+                          : 'md:bg-white group-hover:md:bg-slate-50';
 
                       return (
                         <tr key={record.id} className={`group transition-colors ${rowBg}`}>
@@ -5695,7 +5752,11 @@ ${rowsHtml}
 
                           <td
                             className={`no-print sticky right-0 z-10 px-3 py-2 text-right whitespace-nowrap shadow-[-2px_0_4px_-2px_rgba(15,23,42,0.06)] ${
-                              isHighlighted ? 'bg-teal-50' : 'bg-white group-hover:bg-slate-50'
+                              isEBillSubmitted
+                                ? 'bg-emerald-100 group-hover:bg-emerald-200'
+                                : isHighlighted
+                                  ? 'bg-teal-50'
+                                  : 'bg-white group-hover:bg-slate-50'
                             }`}
                           >
                             {confirmDeleteId === record.id ? (
@@ -5832,6 +5893,14 @@ ${rowsHtml}
       const GS_LAST_SYNC_KEY = 'esic_google_sync_last_v1';
       const GS_SAVED_AT_KEY = 'esic_google_sync_saved_at_v1';
       const LOCAL_NOTES_KEY = 'esic_permanent_notepad_v1';
+      const DEFAULT_SCRIPT_NOTE = {
+        id: DEFAULT_SCRIPT_NOTE_ID,
+        label: 'Google Apps Script Web App URL',
+        content: DEFAULT_SCRIPT_NOTE_URL,
+        createdAtIso: DEFAULT_SCRIPT_NOTE_CREATED_AT,
+        updatedAtIso: DEFAULT_SCRIPT_NOTE_CREATED_AT,
+        source: 'local',
+      };
 
       function getCloudBridge() {
         return (
@@ -5854,6 +5923,7 @@ ${rowsHtml}
               return customId || `note_${Date.now()}`;
             },
             async updatePermanentNoteInCloud() {},
+            async deletePermanentNoteFromCloud() {},
             subscribePermanentNotes(_uid, onData) {
               onData([]);
               return () => {};
@@ -5934,7 +6004,16 @@ ${rowsHtml}
           const raw = localStorage.getItem(LOCAL_NOTES_KEY);
           if (raw) {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed)) {
+              const wasRemoved = localStorage.getItem(DEFAULT_SCRIPT_NOTE_REMOVED_KEY) === '1';
+              if (!wasRemoved && !parsed.some((note) => note.id === DEFAULT_SCRIPT_NOTE_ID)) {
+                return [DEFAULT_SCRIPT_NOTE, ...parsed];
+              }
+              return parsed;
+            }
+          }
+          if (localStorage.getItem(DEFAULT_SCRIPT_NOTE_REMOVED_KEY) !== '1') {
+            return [DEFAULT_SCRIPT_NOTE];
           }
         } catch {
           return [];
@@ -5948,6 +6027,8 @@ ${rowsHtml}
         const [customColumns, setCustomColumns] = useState(loadCustomColumns);
         const [hiddenBaseKeys, setHiddenBaseKeys] = useState(loadHiddenBaseKeys);
         const [editingId, setEditingId] = useState(null);
+        const [isClaimFormOpen, setIsClaimFormOpen] = useState(false);
+        const [claimStatusFilter, setClaimStatusFilter] = useState('all');
         const [viewingRecordId, setViewingRecordId] = useState(null);
         const [proformaRecordId, setProformaRecordId] = useState(null);
         const [formP2RecordId, setFormP2RecordId] = useState(null);
@@ -6186,6 +6267,12 @@ ${rowsHtml}
               acc.finalBill += parseNumericAmount(rec.finalBill || '');
               acc.settledAmount += parseNumericAmount(rec.settledAmount || '');
               acc.deductionAmount += parseNumericAmount(rec.deductionAmount || '');
+              const status = (rec.status || '').trim();
+              if (status === 'E-Bill Submitted') acc.eBillSubmittedCount += 1;
+              if (status === 'Admitted') acc.admittedCount += 1;
+              if (status === 'Discharge') acc.dischargeCount += 1;
+              if (status === 'Hard-Copy Submitted') acc.hardCopySubmittedCount += 1;
+              if (status === 'Query') acc.queryCount += 1;
               return acc;
             },
             {
@@ -6194,6 +6281,11 @@ ${rowsHtml}
               finalBill: 0,
               settledAmount: 0,
               deductionAmount: 0,
+              eBillSubmittedCount: 0,
+              admittedCount: 0,
+              dischargeCount: 0,
+              hardCopySubmittedCount: 0,
+              queryCount: 0,
             }
           );
         }, [records]);
@@ -6202,6 +6294,12 @@ ${rowsHtml}
           (activeView === 'entry' || activeView === 'register') && filteredSummary
             ? filteredSummary
             : allRecordsTotals;
+
+        const handleDashboardStatusFilter = (status) => {
+          setClaimStatusFilter(status);
+          setIsClaimFormOpen(false);
+          setActiveView('register');
+        };
 
         const showNotice = useCallback((text, tone = 'success') => {
           setNotice({ text, tone });
@@ -6223,6 +6321,7 @@ ${rowsHtml}
 
         const handleStartNewEntry = () => {
           resetForNewEntry(records, customColumns);
+          setIsClaimFormOpen(true);
           setActiveView('entry');
           window.requestAnimationFrame(() => {
             if (formAnchorRef.current) {
@@ -6323,6 +6422,7 @@ ${rowsHtml}
             );
             setRecords(updatedRecords);
             resetForNewEntry(updatedRecords, customColumns);
+            setIsClaimFormOpen(keepEntering);
             showNotice(
               `Updated claim record ${cleanedForm.claimId || cleanedForm.patientName || `#${cleanedForm.srNo}`}.`
             );
@@ -6340,6 +6440,7 @@ ${rowsHtml}
           const nextRecords = [...records, newRecord];
           setRecords(nextRecords);
           resetForNewEntry(nextRecords, customColumns);
+          setIsClaimFormOpen(keepEntering);
           showNotice(
             `Saved claim entry ${newRecord.claimId || newRecord.patientName || `#${newRecord.srNo}`}.`
           );
@@ -6373,6 +6474,7 @@ ${rowsHtml}
           nextForm.admissionRemark = record.admissionRemark || '';
           nextForm.admissionImplantsJson = record.admissionImplantsJson || '';
           setEditingId(record.id);
+          setIsClaimFormOpen(true);
           setFormData(nextForm);
           setActiveView('entry');
           window.requestAnimationFrame(() => {
@@ -6406,6 +6508,7 @@ ${rowsHtml}
           setRecords(nextRecords);
           if (editingId === id) {
             resetForNewEntry(nextRecords, customColumns);
+            setIsClaimFormOpen(false);
           }
           if (viewingRecordId === id) {
             setViewingRecordId(null);
@@ -6416,6 +6519,7 @@ ${rowsHtml}
         const handleClearAll = () => {
           setRecords([]);
           resetForNewEntry([], customColumns);
+          setIsClaimFormOpen(false);
           setViewingRecordId(null);
           showNotice('Cleared all claim records.');
         };
@@ -6631,6 +6735,33 @@ ${rowsHtml}
           }
         };
 
+        const handleDeleteNote = async (note) => {
+          if (!window.confirm(`Remove "${note.label || 'Saved Note'}" from the permanent notepad?`)) return;
+          if (note.id === DEFAULT_SCRIPT_NOTE_ID) {
+            try {
+              localStorage.setItem(DEFAULT_SCRIPT_NOTE_REMOVED_KEY, '1');
+            } catch (err) {
+              showNotice(
+                `Could not remember removal of the default URL: ${err instanceof Error ? err.message : String(err)}`,
+                'error'
+              );
+              return;
+            }
+          }
+          try {
+            if (authUser) {
+              await getCloudBridge().deletePermanentNoteFromCloud(authUser.uid, note.id);
+            }
+            setLocalNotes((prev) => prev.filter((item) => item.id !== note.id));
+            showNotice('Removed permanent notepad entry.');
+          } catch (err) {
+            showNotice(
+              `Could not remove notepad entry: ${err instanceof Error ? err.message : String(err)}`,
+              'error'
+            );
+          }
+        };
+
         const editingRecord = editingId ? records.find((r) => r.id === editingId) : undefined;
         const editingLabel = editingRecord
           ? editingRecord.claimId || editingRecord.patientName || `SR NO ${editingRecord.srNo}`
@@ -6673,7 +6804,10 @@ ${rowsHtml}
               <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-8 px-4 sm:px-6 lg:px-8">
                 <button
                   type="button"
-                  onClick={() => setActiveView('entry')}
+                  onClick={() => {
+                    setIsClaimFormOpen(true);
+                    setActiveView('entry');
+                  }}
                   className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
                 >
                   ESIC Claim Register
@@ -6758,7 +6892,10 @@ ${rowsHtml}
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setActiveView(item.id)}
+                    onClick={() => {
+                      if (item.id === 'entry') setIsClaimFormOpen(true);
+                      setActiveView(item.id);
+                    }}
                     className={`py-1 whitespace-nowrap shrink-0 border-b-2 ${
                       activeView === item.id
                         ? 'border-teal-700 text-slate-900 font-semibold'
@@ -6837,10 +6974,16 @@ ${rowsHtml}
               </div>
 
               <section
-                aria-label="Claims Financial Overview"
-                className="mb-6 grid grid-cols-2 divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white md:grid-cols-4 md:divide-x md:divide-y-0"
+                aria-label="Claims Dashboard"
+                className="mb-6 grid grid-cols-2 divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white sm:grid-cols-4 sm:divide-x sm:divide-y-0 xl:grid-cols-8"
               >
-                <div className="px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('all')}
+                  aria-pressed={claimStatusFilter === 'all'}
+                  title="Show all claims in the register"
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'all' ? 'bg-teal-50/60' : ''}`}
+                >
                   <div className="text-xs font-medium text-slate-500">Displayed Claims</div>
                   <div className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
                     {topKpi.displayedCount}
@@ -6850,10 +6993,10 @@ ${rowsHtml}
                       </span>
                     ) : null}
                   </div>
-                </div>
-                <div className="px-6 py-4">
+                </button>
+                <div className="min-w-0 px-6 py-4">
                   <div className="text-xs font-medium text-slate-500">Total Final Bill</div>
-                  <div className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
+                  <div className="mt-1 whitespace-nowrap font-mono text-base font-semibold leading-tight tracking-tight text-slate-900 tabular-nums lg:text-lg xl:text-base 2xl:text-lg">
                     ₹{formatCurrencyValue(topKpi.finalBill)}
                   </div>
                 </div>
@@ -6863,41 +7006,97 @@ ${rowsHtml}
                     ₹{formatCurrencyValue(topKpi.settledAmount)}
                   </div>
                 </div>
-                <div className="px-6 py-4">
-                  <div className="text-xs font-medium text-slate-500">Total Deduction Amount</div>
-                  <div className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
-                    ₹{formatCurrencyValue(topKpi.deductionAmount)}
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('E-Bill Submitted')}
+                  aria-pressed={claimStatusFilter === 'E-Bill Submitted'}
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'E-Bill Submitted' ? 'bg-teal-50/60' : ''}`}
+                >
+                  <div className="text-xs font-medium text-slate-500">E-Bill Submitted</div>
+                  <div className="mt-1 font-mono text-xl font-semibold text-teal-700 tabular-nums">
+                    {topKpi.eBillSubmittedCount}
                   </div>
-                </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('Admitted')}
+                  aria-pressed={claimStatusFilter === 'Admitted'}
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'Admitted' ? 'bg-teal-50/60' : ''}`}
+                >
+                  <div className="text-xs font-medium text-slate-500">Admitted</div>
+                  <div className="mt-1 font-mono text-xl font-semibold text-amber-700 tabular-nums">
+                    {topKpi.admittedCount}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('Discharge')}
+                  aria-pressed={claimStatusFilter === 'Discharge'}
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'Discharge' ? 'bg-teal-50/60' : ''}`}
+                >
+                  <div className="text-xs font-medium text-slate-500">Discharge</div>
+                  <div className="mt-1 font-mono text-xl font-semibold text-slate-700 tabular-nums">
+                    {topKpi.dischargeCount}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('Hard-Copy Submitted')}
+                  aria-pressed={claimStatusFilter === 'Hard-Copy Submitted'}
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'Hard-Copy Submitted' ? 'bg-teal-50/60' : ''}`}
+                >
+                  <div className="text-xs font-medium text-slate-500">Hard-Copy Submitted</div>
+                  <div className="mt-1 font-mono text-xl font-semibold text-teal-700 tabular-nums">
+                    {topKpi.hardCopySubmittedCount}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDashboardStatusFilter('Query')}
+                  aria-pressed={claimStatusFilter === 'Query'}
+                  className={`px-6 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-teal-700 ${claimStatusFilter === 'Query' ? 'bg-teal-50/60' : ''}`}
+                >
+                  <div className="text-xs font-medium text-slate-500">Query</div>
+                  <div className="mt-1 font-mono text-xl font-semibold text-amber-700 tabular-nums">
+                    {topKpi.queryCount}
+                  </div>
+                </button>
               </section>
 
               {activeView === 'entry' ? (
                 <div className="space-y-8">
-                  <ClaimForm
-                    columns={allColumns}
-                    customColumns={customColumns}
-                    hiddenBaseKeys={hiddenBaseKeys}
-                    formData={formData}
-                    isEditing={Boolean(editingId)}
-                    editingLabel={editingLabel}
-                    nowMs={nowMs}
-                    onChange={setFormData}
-                    onAddCustomColumn={handleAddCustomColumn}
-                    onRemoveCustomColumn={handleRemoveCustomColumn}
-                    onRenameCustomColumn={handleRenameCustomColumn}
-                    onHideBaseColumn={handleHideBaseColumn}
-                    onRestoreBaseColumn={handleRestoreBaseColumn}
-                    onRestoreAllBaseColumns={handleRestoreAllBaseColumns}
-                    onSubmit={handleFormSubmit}
-                    onReset={() => setFormData(createEmptyForm(computeNextSrNo(records), customColumns))}
-                    onCancelEdit={() => resetForNewEntry(records, customColumns)}
-                  />
+                  {isClaimFormOpen ? (
+                    <ClaimForm
+                      columns={allColumns}
+                      customColumns={customColumns}
+                      hiddenBaseKeys={hiddenBaseKeys}
+                      formData={formData}
+                      isEditing={Boolean(editingId)}
+                      editingLabel={editingLabel}
+                      nowMs={nowMs}
+                      onChange={setFormData}
+                      onAddCustomColumn={handleAddCustomColumn}
+                      onRemoveCustomColumn={handleRemoveCustomColumn}
+                      onRenameCustomColumn={handleRenameCustomColumn}
+                      onHideBaseColumn={handleHideBaseColumn}
+                      onRestoreBaseColumn={handleRestoreBaseColumn}
+                      onRestoreAllBaseColumns={handleRestoreAllBaseColumns}
+                      onSubmit={handleFormSubmit}
+                      onReset={() => setFormData(createEmptyForm(computeNextSrNo(records), customColumns))}
+                      onCancelEdit={() => {
+                        resetForNewEntry(records, customColumns);
+                        setIsClaimFormOpen(false);
+                      }}
+                    />
+                  ) : null}
 
                   <ClaimTable
                     columns={allColumns}
                     records={records}
                     editingId={editingId}
                     nowMs={nowMs}
+                    statusFilter={claimStatusFilter}
+                    onStatusFilterChange={setClaimStatusFilter}
                     onView={(rec) => setViewingRecordId(rec.id)}
                     onEdit={handleEditRecord}
                     onDuplicate={handleDuplicateRecord}
@@ -6920,6 +7119,8 @@ ${rowsHtml}
                   records={records}
                   editingId={editingId}
                   nowMs={nowMs}
+                  statusFilter={claimStatusFilter}
+                  onStatusFilterChange={setClaimStatusFilter}
                   onView={(rec) => setViewingRecordId(rec.id)}
                   onEdit={handleEditRecord}
                   onDuplicate={handleDuplicateRecord}
@@ -6954,6 +7155,7 @@ ${rowsHtml}
                   onSignOutGoogle={handleSignOutGoogle}
                   onSaveNewNote={handleSaveNewNote}
                   onUpdateNote={handleUpdateNote}
+                  onDeleteNote={handleDeleteNote}
                   onSyncComplete={(timestamp, message) => {
                     setGsLastSyncedAt(timestamp);
                     showNotice(message);
