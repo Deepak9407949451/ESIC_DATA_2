@@ -597,7 +597,7 @@
           group: 'identity',
           title: '01. Claim & ESIC Identification',
           subtitle: 'Serial number, claim ID, ESIC insured person number, admission identifiers, and area name.',
-          baseOrder: ['srNo', 'claimId', 'ipNoEsic', 'admissionNumber', 'uhidNoEsic', 'referenceNumber', 'areaName'],
+          baseOrder: ['srNo', 'claimId', 'ipNoEsic', 'admissionNumber', 'uhidHospital', 'uhidNoEsic', 'referenceNumber', 'areaName'],
         },
         {
           group: 'patient',
@@ -670,6 +670,7 @@
         { key: 'patientName', header: 'Patient Name', group: 'patient', inputType: 'text', minWidth: '176px', placeholder: 'Full name of patient' },
         { key: 'employeeName', header: 'Name Of Employee', group: 'patient', inputType: 'text', minWidth: '176px', placeholder: 'Insured employee name' },
         { key: 'admissionNumber', header: 'Admission Number ( IP NO )', group: 'identity', inputType: 'text', mono: true, minWidth: '188px', placeholder: 'IPD/2026/1042' },
+        { key: 'uhidHospital', header: 'UHID ( HOSPITAL )', group: 'identity', inputType: 'text', mono: true, minWidth: '160px', placeholder: 'Hospital UHID' },
         { key: 'uhidNoEsic', header: 'UHID No.( ESIC)', group: 'identity', inputType: 'text', mono: true, minWidth: '150px', placeholder: 'UHID-884210' },
         { key: 'referenceNumber', header: 'Reference Number', group: 'identity', inputType: 'text', mono: true, minWidth: '158px', placeholder: 'REF/ESIC/2026/719' },
         { key: 'areaName', header: 'Area Name', group: 'identity', inputType: 'text', minWidth: '144px', placeholder: 'Locality / Zone / Area' },
@@ -742,6 +743,7 @@
           patientName: '',
           employeeName: '',
           admissionNumber: '',
+          uhidHospital: '',
           uhidNoEsic: '',
           referenceNumber: '',
           areaName: '',
@@ -1233,6 +1235,20 @@
         return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
       }
 
+      const GOOGLE_HEADER_ALIASES = {
+        uhidhospital: 'uhidHospital',
+        hospitaluhid: 'uhidHospital',
+        hospitaluhidno: 'uhidHospital',
+        uhidhospitalno: 'uhidHospital',
+        uhidhospitalnumber: 'uhidHospital',
+        uhid: 'uhidHospital',
+        uhidnoesic: 'uhidNoEsic',
+        esicuhid: 'uhidNoEsic',
+      };
+      function googleCanonicalKey(header) {
+        return GOOGLE_HEADER_ALIASES[normalizeHeader(header)] || '';
+      }
+
       function importClaimsFromCsv(csvText, existingColumns, startingSrNo) {
         const rows = parseCsvText(csvText);
         if (rows.length < 2) return { records: [], newCustomColumns: [] };
@@ -1553,6 +1569,8 @@ ${schemaLines}
 ];
 
 const NUMERIC_KEYS = new Set(${JSON.stringify(numericKeys)});
+const HEADER_ALIASES = ${JSON.stringify(GOOGLE_HEADER_ALIASES)};
+function normHeader(value) { return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
 function getOrCreateSheet(sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1646,8 +1664,11 @@ function doGet(e) {
           timeCount++;
         } else {
           matched = SCHEMA.find(function (s) {
-            return s.header.toLowerCase().replace(/[^a-z0-9]/g, '') === norm;
+            return normHeader(s.header) === norm;
           });
+          if (!matched && HEADER_ALIASES[norm]) {
+            matched = SCHEMA.find(function (s) { return s.key === HEADER_ALIASES[norm]; });
+          }
         }
         var targetKey = matched ? matched.key : hdr;
         var targetType = matched ? matched.type : 'text';
@@ -4092,7 +4113,13 @@ ${rowsHtml}
         const [isPulling, setIsPulling] = useState(false);
         const [syncMessage, setSyncMessage] = useState(null);
 
-        const scriptCode = useMemo(() => generateGoogleAppsScriptCode(columns, sheetName, selectedHeaderKey), [columns, sheetName, selectedHeaderKey]);
+        const hospitalUhidColumn = columns.find((col) => col.key === 'uhidHospital') ||
+          BASE_CLAIM_COLUMNS.find((col) => col.key === 'uhidHospital');
+        const syncColumns = hospitalUhidColumn && !columns.some((col) => col.key === 'uhidHospital')
+          ? [...columns, hospitalUhidColumn]
+          : columns;
+
+        const scriptCode = useMemo(() => generateGoogleAppsScriptCode(syncColumns, sheetName, selectedHeaderKey), [syncColumns, sheetName, selectedHeaderKey]);
 
         const handleCopyCode = () => {
           void copyTextToClipboard(scriptCode).then(() => { setCopiedScript(true); window.setTimeout(() => setCopiedScript(false), 2000); });
@@ -4116,10 +4143,10 @@ ${rowsHtml}
             const payload = {
               action: 'sync',
               sheetName: sheetName.trim() || 'ESIC_Claims_Register',
-              columns: columns.map((c) => ({ key: c.key, header: c.header, type: c.inputType })),
+              columns: syncColumns.map((c) => ({ key: c.key, header: c.header, type: c.inputType })),
               rows: records.map((rec) => {
                 const cleanRow = {};
-                columns.forEach((col) => { cleanRow[col.key] = rec[col.key] ?? ''; });
+                syncColumns.forEach((col) => { cleanRow[col.key] = rec[col.key] ?? ''; });
                 return cleanRow;
               }),
               implantRows,
@@ -4177,7 +4204,8 @@ ${rowsHtml}
               if (!trimmed) return;
               const norm = normalizeHeader(trimmed);
               if (norm === 'time') return;
-              const match = columns.find((c) => normalizeHeader(c.header) === norm);
+              const match = columns.find((c) => normalizeHeader(c.header) === norm) ||
+                (googleCanonicalKey(trimmed) ? { key: googleCanonicalKey(trimmed), header: trimmed } : null);
               if (match) {
                 headerToKey.set(trimmed, match.key);
               } else {
@@ -4195,14 +4223,21 @@ ${rowsHtml}
             });
 
             const allKeys = [...columns.map((c) => c.key), ...discoveredCustom.map((c) => c.key)];
+            Object.values(GOOGLE_HEADER_ALIASES).forEach((key) => {
+              if (!allKeys.includes(key)) allKeys.push(key);
+            });
             const nowIso = new Date().toISOString();
             const loadedRecords = rawRows.map((rawRow, idx) => {
               const rec = {};
               allKeys.forEach((k) => { rec[k] = ''; });
               Object.entries(rawRow).forEach(([k, v]) => {
                 const strVal = v === null || v === undefined ? '' : String(v).trim();
-                if (allKeys.includes(k)) rec[k] = strVal;
-                else if (headerToKey.has(k)) rec[headerToKey.get(k)] = strVal;
+                let targetKey = allKeys.includes(k) ? k : (headerToKey.has(k) ? headerToKey.get(k) : '');
+                if (!targetKey) {
+                  const aliasKey = googleCanonicalKey(k);
+                  if (aliasKey && allKeys.includes(aliasKey)) targetKey = aliasKey;
+                }
+                if (targetKey) rec[targetKey] = strVal;
               });
               if (!rec.srNo) rec.srNo = String(idx + 1);
               return { ...rec, id: `gs-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`, createdAt: nowIso, updatedAt: nowIso };
@@ -4426,6 +4461,37 @@ ${rowsHtml}
         );
       }
 
+      function ReadmissionPromptModal({ match, onConfirm, onDismiss }) {
+        if (!match) return null;
+        return (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[1px]" role="dialog" aria-modal="true" aria-labelledby="readmission-prompt-title" onClick={(e) => { if (e.target === e.currentTarget) onDismiss(); }}>
+            <div className="w-full max-w-md overflow-hidden rounded-xl border border-amber-200 bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-3 border-b border-amber-100 bg-amber-50 px-5 py-4">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-800"><AlertTriangle className="h-5 w-5" /></span>
+                  <div>
+                    <h2 id="readmission-prompt-title" className="font-display text-sm font-bold text-amber-900">Re-admission found</h2>
+                    <p className="mt-0.5 text-xs text-amber-800">This Hospital UHID already exists in the saved register.</p>
+                  </div>
+                </div>
+                <button type="button" onClick={onDismiss} aria-label="Close re-admission popup" className="rounded-md p-1 text-amber-800 hover:bg-amber-100"><X className="h-4 w-4" /></button>
+              </div>
+              <div className="space-y-2 px-5 py-4 text-xs text-slate-700">
+                <div className="flex justify-between gap-4"><span className="text-slate-500">Patient</span><span className="text-right font-semibold">{String(match.patientName || 'this patient')}</span></div>
+                <div className="flex justify-between gap-4"><span className="text-slate-500">Hospital UHID</span><span className="font-mono font-semibold">{String(match.uhidHospital || '-')}</span></div>
+                <div className="flex justify-between gap-4"><span className="text-slate-500">Claim ID</span><span className="font-mono">{String(match.claimId || '-')}</span></div>
+                <div className="flex justify-between gap-4"><span className="text-slate-500">DOA / Status</span><span className="text-right">{String(match.doa || '-')} / {String(match.status || '-')}</span></div>
+                <p className="rounded-lg bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">Choose <b>Yes, Re-admit</b> to copy every field into a fresh entry with a new SR NO. Choose <b>No, New Entry</b> to keep the UHID you typed and fill the rest yourself.</p>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
+                <button type="button" onClick={onDismiss} className="inline-flex h-9 items-center rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-100">No, New Entry</button>
+                <button type="button" onClick={onConfirm} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-teal-700 px-4 text-xs font-semibold text-white hover:bg-teal-800"><Check className="h-4 w-4" />Yes, Re-admit</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       // =========================================================================
       // CLAIM FORM COMPONENT
       // =========================================================================
@@ -4435,6 +4501,7 @@ ${rowsHtml}
         columns,
         customColumns,
         hiddenBaseKeys,
+        records,
         formData,
         isEditing,
         editingLabel,
@@ -4446,6 +4513,7 @@ ${rowsHtml}
         onHideBaseColumn,
         onRestoreBaseColumn,
         onRestoreAllBaseColumns,
+        onCopyExistingRecord,
         onSubmit,
         onOpenPermissionLetter,
         onReset,
@@ -4453,6 +4521,16 @@ ${rowsHtml}
       }) {
         const [layoutMode, setLayoutMode] = useState('grouped');
         const [validationError, setValidationError] = useState(null);
+        const [readmissionMatch, setReadmissionMatch] = useState(null);
+        const lastPromptedUhidRef = useRef('');
+
+        useEffect(() => {
+          const currentUhid = String(formData.uhidHospital || '').trim().toUpperCase().replace(/\s+/g, '');
+          if (currentUhid !== lastPromptedUhidRef.current) {
+            lastPromptedUhidRef.current = '';
+            setReadmissionMatch(null);
+          }
+        }, [formData.uhidHospital]);
 
         const [showAddBoxBuilder, setShowAddBoxBuilder] = useState(false);
         const [selectedBuilderSection, setSelectedBuilderSection] = useState('identity');
@@ -4546,6 +4624,24 @@ ${rowsHtml}
           }
 
           onChange(updated);
+
+          if (key === 'uhidHospital' && !isEditing) {
+            const enteredUhid = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+            if (!enteredUhid) {
+              lastPromptedUhidRef.current = '';
+              setReadmissionMatch(null);
+            } else if (lastPromptedUhidRef.current !== enteredUhid) {
+              const matchingRecord = records.find(
+                (record) =>
+                  String(record.uhidHospital || '').trim().toUpperCase().replace(/\s+/g, '') ===
+                  enteredUhid
+              );
+              if (matchingRecord) {
+                lastPromptedUhidRef.current = enteredUhid;
+                setReadmissionMatch(matchingRecord);
+              }
+            }
+          }
         };
 
         const handleSaveRemarkAndImplants = (remark, implants) => {
@@ -5482,6 +5578,15 @@ ${rowsHtml}
               initialImplants={parsedImplants}
               onSave={handleSaveRemarkAndImplants}
               onClose={() => setIsRemarkImplantsOpen(false)}
+            />
+            <ReadmissionPromptModal
+              match={readmissionMatch}
+              onDismiss={() => setReadmissionMatch(null)}
+              onConfirm={() => {
+                const match = readmissionMatch;
+                setReadmissionMatch(null);
+                if (match) onCopyExistingRecord(match);
+              }}
             />
           </section>
         );
@@ -6718,6 +6823,29 @@ ${rowsHtml}
           }
         };
 
+        const handleCopyExistingRecord = (record) => {
+          const nextSrNo = computeNextSrNo(records);
+          const now = new Date().toISOString();
+          const copiedForm = {
+            ...createEmptyForm(nextSrNo, customColumns),
+            ...record,
+            srNo: String(nextSrNo),
+            createdAt: now,
+            updatedAt: now,
+          };
+          delete copiedForm.id;
+          setEditingId(null);
+          setFormData(copiedForm);
+          setIsClaimFormOpen(true);
+          setActiveView('entry');
+          showNotice('Re-admission: copied all data from ' + String(record.patientName || record.claimId || 'the existing record') + ' into new SR NO ' + nextSrNo + '. Review and save.');
+          window.requestAnimationFrame(() => {
+            if (formAnchorRef.current) {
+              formAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          });
+        };
+
         const handleEditRecord = (record) => {
           const nextForm = createEmptyForm(computeNextSrNo(records), customColumns);
           allColumns.forEach((col) => {
@@ -7324,6 +7452,7 @@ ${rowsHtml}
                       columns={allColumns}
                       customColumns={customColumns}
                       hiddenBaseKeys={hiddenBaseKeys}
+                      records={records}
                       formData={formData}
                       isEditing={Boolean(editingId)}
                       editingLabel={editingLabel}
@@ -7335,6 +7464,7 @@ ${rowsHtml}
                       onHideBaseColumn={handleHideBaseColumn}
                       onRestoreBaseColumn={handleRestoreBaseColumn}
                       onRestoreAllBaseColumns={handleRestoreAllBaseColumns}
+                      onCopyExistingRecord={handleCopyExistingRecord}
                       onSubmit={handleFormSubmit}
                       onOpenPermissionLetter={(draft) => {
                         setPermissionLetterRecordId(null);
